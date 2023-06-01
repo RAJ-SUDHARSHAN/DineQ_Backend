@@ -1,5 +1,6 @@
 from django.contrib.gis.db import models
 
+
 class Restaurant(models.Model):
     name = models.CharField(max_length=255)
     place_id = models.CharField(max_length=255, unique=True)
@@ -13,15 +14,25 @@ class Restaurant(models.Model):
         return self.name
 
 
-'''
-Sample data entry to db
-INSERT INTO restaurants_restaurant (name, place_id, location, address, verified, geo_fence_radius)
-VALUES (
-  'Club Rodeo Rio',
-  'ChIJ127sjWTLj4AR_UwVXhjwYKA',
-  ST_SetSRID(ST_MakePoint(-121.9083684, 37.3413231), 4326),
-  '610 Coleman Avenue, San Jose',
-  TRUE,
-  5000
-);
-'''
+class Menu(models.Model):
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    description = models.TextField()
+
+
+class MenuItem(models.Model):
+    menu = models.ForeignKey(Menu, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    description = models.TextField()
+    price = models.DecimalField(max_digits=6, decimal_places=2)
+
+
+class Seating(models.Model):
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    total_capacity = models.IntegerField()
+    current_occupancy = models.IntegerField()
+
+
+class Queue(models.Model):
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    total_in_queue = models.IntegerField()

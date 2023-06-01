@@ -133,3 +133,5 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 GDAL_LIBRARY_PATH = '/opt/homebrew/Cellar/gdal/3.6.4_4/lib/libgdal.dylib'
 GEOS_LIBRARY_PATH = '/opt/homebrew/Cellar//geos/3.11.2/lib/libgeos_c.dylib'
 GOOGLE_MAPS_API_KEY = os.getenv('GOOGLE_MAPS_API_KEY')
+SANDBOX_APPLICATION_ID = os.getenv('SANDBOX_APPLICATION_ID')
+SQUARE_SANDBOX_ACCESS_TOKEN = os.getenv('SQUARE_SANDBOX_ACCESS_TOKEN')
