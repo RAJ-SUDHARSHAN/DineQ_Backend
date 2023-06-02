@@ -52,6 +52,7 @@ class NearbyRestaurantsAPIView(APIView):
                     'address': result['vicinity'],
                     'rating': result.get('rating', None),
                     'user_ratings_total': result.get('user_ratings_total', None),
+                    'photo_reference': result['photos'][0]['photo_reference'] if 'photos' in result and len(result['photos']) > 0 else None,
                     'in_range': in_range,
                 }
                 nearby_restaurants.append(restaurant_info)
@@ -73,24 +74,6 @@ def list_menu_items():
         return result.body
     elif result.is_error():
         print(f'Error calling the API: {result.errors}')
-        return None
-
-
-def create_restaurant_id_custom_attribute_definition(client):
-    body = {
-        "idempotency_key": str(uuid.uuid4()),
-        "custom_attribute_definition": {
-            "name": "restaurant_id",
-            "type": "STRING",
-            "allowed_object_types": ["ITEM"]
-        }
-    }
-    response = client.catalog.create_catalog_custom_attribute_definition(body)
-
-    if response.is_success():
-        return response.body['custom_attribute_definition']['id']
-    elif response.is_error():
-        print(f'Error creating custom attribute definition: {response.errors}')
         return None
 
 
