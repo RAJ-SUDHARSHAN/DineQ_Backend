@@ -13,7 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from square.client import Client
 
-from .models import Category, Item, Restaurant
+from .models import Category, Item, Restaurant, Variation
 from .serializers import RestaurantSerializer
 
 
@@ -94,6 +94,20 @@ def upsert_category(client, category, restaurant_id):
 def upsert_item(client, item, restaurant_id):
     idempotency_key = str(uuid.uuid4())
     id_value = f"#{item['name'].replace(' ', '_')}_{item['category_id']}"
+    variations = [{
+        "type": "ITEM_VARIATION",
+        "id": f"#{variation['name'].replace(' ', '_')}_{id_value}",
+        "item_variation_data": {
+            "item_id": id_value,
+            "name": variation["name"],
+            "pricing_type": "FIXED_PRICING",
+            "price_money": {
+                "amount": variation["price"],
+                "currency": "USD"
+            }
+        }
+    } for variation in item.get('variations', [])]
+
     item_body = {
         "idempotency_key": idempotency_key,
         "object": {
@@ -103,21 +117,7 @@ def upsert_item(client, item, restaurant_id):
                 "name": item["name"],
                 "description": item["description"],
                 "category_id": item["category_id"],
-                "variations": [
-                    {
-                        "type": "ITEM_VARIATION",
-                        "id": f"#{item['variations'][0]['name'].replace(' ', '_')}_{id_value}",
-                        "item_variation_data": {
-                            "item_id": id_value,
-                            "name": item["variations"][0]["name"],
-                            "pricing_type": "FIXED_PRICING",
-                            "price_money": {
-                                "amount": item["variations"][0]["price"],
-                                "currency": "USD"
-                            }
-                        }
-                    }
-                ]
+                "variations": variations
             },
         }
     }
@@ -210,10 +210,18 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                             category=category_obj,
                             defaults={
                                 'item_id': item_id,
-                                'quantity': item.get('quantity', 10),
-                                'price': item['variations'][0]['price']
+                                'description': item.get('description', None)
                             }
                         )
+                        for variation in item.get('variations', []):
+                            Variation.objects.update_or_create(
+                                name=variation['name'],
+                                item=item_obj,
+                                defaults={
+                                    'price': variation['price'],
+                                    'quantity': variation.get('quantity', 10),
+                                }
+                            )
                 except Exception as e:
                     return Response({'error': f'Failed to upsert item: {item["name"]}  in DB. Error: {str(e)}'}, status=500)
 
