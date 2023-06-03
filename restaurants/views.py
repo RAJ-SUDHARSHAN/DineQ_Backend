@@ -67,14 +67,12 @@ def get_square_client():
     )
 
 
-def list_menu_items():
-    client = get_square_client()
-    result = client.catalog.list_catalog(types='ITEM')
-    if result.is_success():
-        return result.body
-    elif result.is_error():
-        print(f'Error calling the API: {result.errors}')
-        return None
+def upsert_catalog_object(client, object_body):
+    response = client.catalog.upsert_catalog_object(object_body)
+    if response.is_success():
+        return {'success': response.body['catalog_object']['id']}
+    elif response.is_error():
+        return {'error': response.errors}
 
 
 def upsert_category(client, category, restaurant_id):
@@ -90,15 +88,7 @@ def upsert_category(client, category, restaurant_id):
             }
         }
     }
-
-    response = client.catalog.upsert_catalog_object(category_body)
-    if response.is_success():
-        print(f'Successfully upserted category: {category["name"]}')
-        # Return the id from the response
-        return response.body['catalog_object']['id']
-    elif response.is_error():
-        print(f'Error upserting category: {response.errors}')
-        return None
+    return upsert_catalog_object(client, category_body)
 
 
 def upsert_item(client, item, restaurant_id):
@@ -131,14 +121,7 @@ def upsert_item(client, item, restaurant_id):
             },
         }
     }
-    response = client.catalog.upsert_catalog_object(item_body)
-    if response.is_success():
-        print(f'Successfully upserted item: {item["name"]}')
-        # Return the id from the response
-        return response.body['catalog_object']['id']
-    elif response.is_error():
-        print(f'Error upserting item: {response.errors}')
-        return None
+    return upsert_catalog_object(client, item_body)
 
 
 def update_item_in_category(client, restaurant, category_name, item_name, new_data):
@@ -146,9 +129,7 @@ def update_item_in_category(client, restaurant, category_name, item_name, new_da
         category = Category.objects.get(
             name=category_name, restaurant=restaurant)
     except Category.DoesNotExist:
-        print(
-            f'Error: Category "{category_name}" not found in restaurant "{restaurant.name}"')
-        return
+        return {'error': f'Category "{category_name}" not found in restaurant "{restaurant.name}"'}
 
     category_id = category.category_id
 
@@ -179,15 +160,10 @@ def update_item_in_category(client, restaurant, category_name, item_name, new_da
                 }
 
                 # Update the item
-                update_response = client.catalog.upsert_catalog_object(
-                    item_body)
-
-                if update_response.is_success():
-                    print(f'Successfully updated item: {item_name}')
-                elif update_response.is_error():
-                    print(f'Error updating item: {update_response.errors}')
+                return upsert_catalog_object(client, item_body)
+        return {'error': f'Item "{item_name}" not found in category "{category_name}"'}
     elif response.is_error():
-        print(f'Error fetching items: {response.errors}')
+        return {'error': response.errors}
 
 
 class RestaurantViewSet(viewsets.ModelViewSet):
@@ -199,38 +175,46 @@ class RestaurantViewSet(viewsets.ModelViewSet):
         try:
             restaurant = Restaurant.objects.get(place_id=place_id)
         except Restaurant.DoesNotExist:
-            return Response({'status': 'Restaurant does not exist'}, status=400)
+            return Response({'error': f'Restaurant with place_id: {place_id} does not exist'}, status=404)
 
         menu_data = request.data.get('menu_data')
         client = get_square_client()
         for category in menu_data:
-            category_id = upsert_category(client, category, place_id)
-            if category_id:
+            category_response = upsert_category(client, category, place_id)
+            if 'error' in category_response:
+                return Response({'error': f'Failed to upsert category: {category["name"]}. Error: {category_response["error"]}'}, status=500)
+
+            category_id = category_response['success']
+
+            try:
+                with transaction.atomic():
+                    category_obj, created = Category.objects.get_or_create(
+                        name=category['name'], restaurant=restaurant)
+                    category_obj.category_id = category_id
+                    category_obj.save()
+            except Exception as e:
+                return Response({'error': f'Failed to upsert category: {category["name"]} in DB. Error: {str(e)}'}, status=500)
+
+            for item in category.get('items', []):
+                item['category_id'] = category_id
+                item_response = upsert_item(client, item, place_id)
+                if 'error' in item_response:
+                    return Response({'error': f'Failed to upsert item: {item["name"]}. Error: {item_response["error"]}'}, status=500)
+
+                item_id = item_response['success']
+
                 try:
                     with transaction.atomic():
-                        category_obj, created = Category.objects.get_or_create(
-                            name=category['name'], restaurant=restaurant)
-                        category_obj.category_id = category_id
-                        category_obj.save()
+                        item_obj, created = Item.objects.update_or_create(
+                            name=item['name'],
+                            category=category_obj,
+                            defaults={
+                                'item_id': item_id,
+                                'quantity': item.get('quantity', 10),
+                                'price': item['variations'][0]['price']
+                            }
+                        )
                 except Exception as e:
-                    return Response({'status': 'Category create/update not successful', 'message': f"Exception occurred while saving item: {e}"})
+                    return Response({'error': f'Failed to upsert item: {item["name"]}  in DB. Error: {str(e)}'}, status=500)
 
-                for item in category.get('items', []):
-                    item['category_id'] = category_id
-                    item_id = upsert_item(client, item, place_id)
-                    if item_id:
-                        try:
-                            with transaction.atomic():
-                                item_obj, created = Item.objects.update_or_create(
-                                    name=item['name'],
-                                    category=category_obj,
-                                    defaults={'item_id': item_id,
-                                              'quantity': item.get('quantity', 10),
-                                              'price': item['variations'][0]['price']
-                                              }
-                                )
-                                item_obj.save()
-                        except Exception as e:
-                            return Response({'status': 'Menu create/update not successful', 'message': f"Exception occurred while saving item: {e}"})
-
-        return Response({'status': 'Menu updated successfully'})
+        return Response({'message': 'Menu updated successfully'}, status=200)
