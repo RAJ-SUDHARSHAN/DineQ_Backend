@@ -9,30 +9,27 @@ class Restaurant(models.Model):
     description = models.TextField(blank=True, null=True)
     verified = models.BooleanField(default=False)
     geo_fence_radius = models.IntegerField(default=5000)
+    category_ids = models.JSONField(blank=True, null=True, default=dict)
 
     def __str__(self):
         return self.name
 
 
-class Menu(models.Model):
-    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+class Category(models.Model):
     name = models.CharField(max_length=255)
-    description = models.TextField()
+    category_id = models.CharField(max_length=255)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name='categories')
 
 
-class MenuItem(models.Model):
-    menu = models.ForeignKey(Menu, on_delete=models.CASCADE)
+class Item(models.Model):
     name = models.CharField(max_length=255)
-    description = models.TextField()
-    price = models.DecimalField(max_digits=6, decimal_places=2)
+    description = models.TextField(blank=True, null=True)
+    item_id = models.CharField(max_length=255)
+    category = models.ForeignKey(
+        Category, on_delete=models.CASCADE, related_name='items')
+    quantity = models.IntegerField(default=0)
+    price = models.DecimalField(max_digits=7, decimal_places=2)
 
-
-class Seating(models.Model):
-    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
-    total_capacity = models.IntegerField()
-    current_occupancy = models.IntegerField()
-
-
-class Queue(models.Model):
-    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
-    total_in_queue = models.IntegerField()
+    def __str__(self):
+        return self.name
