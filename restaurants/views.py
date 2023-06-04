@@ -250,6 +250,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                     category_obj, created = Category.objects.get_or_create(
                         name=category['name'], restaurant=restaurant)
                     category_obj.category_id = category_id
+                    category_obj.square_id = category_response['success']['id']
                     category_obj.save()
             except Exception as e:
                 return Response({'error': f'Failed to upsert category: {category["name"]} in DB. Error: {str(e)}'}, status=500)
@@ -262,7 +263,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
 
                 item_id = item_response['success']['item_id']
                 variation_ids = item_response['success']['variation_ids']
-                # Set default inventory to 100
+
                 inventory_response = set_inventory_count(
                     client, variation_ids, 100)
                 if 'error' in inventory_response:
@@ -270,16 +271,18 @@ class RestaurantViewSet(viewsets.ModelViewSet):
 
                 try:
                     with transaction.atomic():
+                        print(item_response)
                         item_obj, created = Item.objects.update_or_create(
                             name=item['name'],
                             category=category_obj,
                             defaults={
                                 'item_id': item_id,
                                 'description': item.get('description', None),
-                                'reference_id': f"#{item['name'].replace(' ', '_')}__{place_id}"
+                                'reference_id': f"#{item['name'].replace(' ', '_')}__{place_id}",
+                                'square_id': item_response['success']['item_id']
                             }
                         )
-                        for variation in item.get('variations', []):
+                        for i, variation in enumerate(item.get('variations', [])):
                             variation_obj, created = Variation.objects.update_or_create(
                                 name=variation['name'],
                                 item=item_obj,
@@ -287,14 +290,14 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                                     'price': variation['price'],
                                     'quantity': variation.get('quantity', 100),
                                     'variation_id': f"#{variation['name'].replace(' ', '_')}__{place_id}",
-                                    'reference_id': f"#{item['name'].replace(' ', '_')}__{variation['name'].replace(' ', '_')}__{place_id}"
+                                    'reference_id': f"#{item['name'].replace(' ', '_')}__{variation['name'].replace(' ', '_')}__{place_id}",
+                                    'square_id': variation_ids[i]
                                 }
                             )
-
                 except Exception as e:
                     return Response({'error': f'Failed to upsert item: {item["name"]} in DB. Error: {str(e)}'}, status=500)
 
-        return Response({'message': 'Menu upserted successfully'}, status=200)
+        return Response({'success': 'Menu upserted successfully.'}, status=200)
 
     @action(detail=True, methods=['get'], url_path='get-menu')
     def get_menu(self, request, pk=None):
@@ -332,6 +335,8 @@ class RestaurantViewSet(viewsets.ModelViewSet):
             variation.quantity = quantity
             variation.save()
 
+            square_id = variation.square_id
+
             body = {
                 "idempotency_key": str(uuid.uuid4()),
                 "changes": [
@@ -339,7 +344,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                         "type": "ADJUSTMENT",
                         "adjustment": {
                             "location_id": "LS3AWJK2V4HW5",
-                            "catalog_object_id": str(variation.variation_id),
+                            "catalog_object_id": str(square_id),
                             "from_state": "NONE",
                             "to_state": "IN_STOCK",
                             "quantity": str(quantity),
@@ -353,7 +358,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
 
             if response.is_error():
                 print(
-                    f"Error updating inventory for variation id {variation.variation_id}: {response.errors}")
+                    f"Error updating inventory for variation id {square_id}: {response.errors}")
                 return Response({'error': f'Failed to update inventory for variation: {variation_reference_id}. Error: {response.errors}'}, status=500)
 
         return Response({'message': 'Inventory updated successfully'}, status=200)
