@@ -271,7 +271,6 @@ class RestaurantViewSet(viewsets.ModelViewSet):
 
                 try:
                     with transaction.atomic():
-                        print(item_response)
                         item_obj, created = Item.objects.update_or_create(
                             name=item['name'],
                             category=category_obj,
@@ -324,7 +323,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
         for inventory_item in inventory_data:
             item_reference_id = inventory_item['item_reference_id']
             variation_reference_id = inventory_item['variation_reference_id']
-            quantity = inventory_item['quantity']
+            set_quantity = inventory_item['quantity']
 
             try:
                 variation = Variation.objects.get(
@@ -332,33 +331,68 @@ class RestaurantViewSet(viewsets.ModelViewSet):
             except Variation.DoesNotExist:
                 return Response({'error': f'Variation with reference_id: {variation_reference_id} does not exist'}, status=404)
 
-            variation.quantity = quantity
+            variation.quantity = set_quantity
             variation.save()
 
             square_id = variation.square_id
 
-            body = {
-                "idempotency_key": str(uuid.uuid4()),
-                "changes": [
-                    {
-                        "type": "ADJUSTMENT",
-                        "adjustment": {
-                            "location_id": "LS3AWJK2V4HW5",
-                            "catalog_object_id": str(square_id),
-                            "from_state": "NONE",
-                            "to_state": "IN_STOCK",
-                            "quantity": str(quantity),
-                            "occurred_at": datetime.now(timezone.utc).isoformat()
+            result = client.inventory.batch_retrieve_inventory_counts(
+                body={
+                    "catalog_object_ids": [str(square_id)],
+                    "location_ids": ["LS3AWJK2V4HW5"]
+                }
+            )
+
+            if result.is_error():
+                return Response({'error': f'Failed to retrieve current inventory for variation: {variation_reference_id}. Error: {result.errors}'}, status=500)
+
+            current_quantity = result.body['counts'][0]['quantity']
+            adjustment = int(set_quantity) - int(current_quantity)
+
+            if adjustment < 0:
+                body = {
+                    "idempotency_key": str(uuid.uuid4()),
+                    "changes": [
+                        {
+                            "type": "ADJUSTMENT",
+                            "adjustment": {
+                                "location_id": "LS3AWJK2V4HW5",
+                                "catalog_object_id": str(square_id),
+                                "from_state": "IN_STOCK",
+                                "to_state": "WASTE",
+                                "quantity": str(-adjustment),
+                                "occurred_at": datetime.now(timezone.utc).isoformat()
+                            }
                         }
-                    }
-                ]
-            }
+                    ]
+                }
 
-            response = client.inventory.batch_change_inventory(body)
+                response = client.inventory.batch_change_inventory(body)
 
-            if response.is_error():
-                print(
-                    f"Error updating inventory for variation id {square_id}: {response.errors}")
-                return Response({'error': f'Failed to update inventory for variation: {variation_reference_id}. Error: {response.errors}'}, status=500)
+                if response.is_error():
+                    return Response({'error': f'Failed to discard excess inventory for variation: {variation_reference_id}. Error: {response.errors}'}, status=500)
+
+            else:
+                body = {
+                    "idempotency_key": str(uuid.uuid4()),
+                    "changes": [
+                        {
+                            "type": "ADJUSTMENT",
+                            "adjustment": {
+                                "location_id": "LS3AWJK2V4HW5",
+                                "catalog_object_id": str(square_id),
+                                "from_state": "NONE",
+                                "to_state": "IN_STOCK",
+                                "quantity": str(abs(adjustment)),
+                                "occurred_at": datetime.now(timezone.utc).isoformat()
+                            }
+                        }
+                    ]
+                }
+
+                response = client.inventory.batch_change_inventory(body)
+
+                if response.is_error():
+                    return Response({'error': f'Failed to update inventory for variation: {variation_reference_id}. Error: {response.errors}'}, status=500)
 
         return Response({'message': 'Inventory updated successfully'}, status=200)
