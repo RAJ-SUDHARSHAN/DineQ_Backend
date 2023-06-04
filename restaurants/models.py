@@ -9,7 +9,6 @@ class Restaurant(models.Model):
     description = models.TextField(blank=True, null=True)
     verified = models.BooleanField(default=False)
     geo_fence_radius = models.IntegerField(default=5000)
-    category_ids = models.JSONField(blank=True, null=True, default=dict)
 
     def __str__(self):
         return self.name
@@ -18,6 +17,8 @@ class Restaurant(models.Model):
 class Category(models.Model):
     name = models.CharField(max_length=255)
     category_id = models.CharField(max_length=255)
+    reference_id = models.CharField(
+        max_length=255, blank=True, null=True)
     restaurant = models.ForeignKey(
         Restaurant, on_delete=models.CASCADE, related_name='categories')
 
@@ -26,6 +27,8 @@ class Item(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
     item_id = models.CharField(max_length=255)
+    reference_id = models.CharField(
+        max_length=255, blank=True, null=True)
     category = models.ForeignKey(
         Category, on_delete=models.CASCADE, related_name='items')
 
@@ -35,6 +38,10 @@ class Item(models.Model):
 
 class Variation(models.Model):
     name = models.CharField(max_length=255)
+    variation_id = models.CharField(
+        max_length=255, blank=True, null=True)
+    reference_id = models.CharField(
+        max_length=255, blank=True, null=True)
     item = models.ForeignKey(
         Item, on_delete=models.CASCADE, related_name='variations')
     price = models.DecimalField(max_digits=7, decimal_places=2)

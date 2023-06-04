@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import os
 import uuid
 
@@ -14,7 +15,8 @@ from rest_framework.views import APIView
 from square.client import Client
 
 from .models import Category, Item, Restaurant, Variation
-from .serializers import RestaurantSerializer
+from .serializers import (CategorySerializer, ItemSerializer,
+                          RestaurantSerializer, VariationSerializer)
 
 
 class NearbyRestaurantsAPIView(APIView):
@@ -170,7 +172,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
     queryset = Restaurant.objects.all()
     serializer_class = RestaurantSerializer
 
-    @action(detail=False, methods=['post'], url_path='menu/(?P<place_id>[^/.]+)/upsert-menu')
+    @action(detail=False, methods=['post'], url_path='(?P<place_id>[^/.]+)/upsert-menu')
     def upsert_menu(self, request, place_id=None):
         try:
             restaurant = Restaurant.objects.get(place_id=place_id)
@@ -191,6 +193,8 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                     category_obj, created = Category.objects.get_or_create(
                         name=category['name'], restaurant=restaurant)
                     category_obj.category_id = category_id
+                    # New line
+                    category_obj.reference_id = f"#{place_id}_{category['name']}"
                     category_obj.save()
             except Exception as e:
                 return Response({'error': f'Failed to upsert category: {category["name"]} in DB. Error: {str(e)}'}, status=500)
@@ -210,19 +214,37 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                             category=category_obj,
                             defaults={
                                 'item_id': item_id,
-                                'description': item.get('description', None)
+                                'description': item.get('description', None),
+                                # New line
+                                'reference_id': f"#{place_id}_{item['name']}"
                             }
                         )
                         for variation in item.get('variations', []):
-                            Variation.objects.update_or_create(
+                            variation_obj, created = Variation.objects.update_or_create(
                                 name=variation['name'],
                                 item=item_obj,
                                 defaults={
                                     'price': variation['price'],
                                     'quantity': variation.get('quantity', 10),
+                                    # New line
+                                    'variation_id': f"#{place_id}_{variation['name']}",
+                                    # New line
+                                    'reference_id': f"#{place_id}_{item['name']}_{variation['name']}"
                                 }
                             )
                 except Exception as e:
                     return Response({'error': f'Failed to upsert item: {item["name"]}  in DB. Error: {str(e)}'}, status=500)
 
         return Response({'message': 'Menu updated successfully'}, status=200)
+
+    @action(detail=True, methods=['get'], url_path='get-menu')
+    def get_menu(self, request, pk=None):
+        try:
+            restaurant = Restaurant.objects.get(place_id=pk)
+        except Restaurant.DoesNotExist:
+            return Response({'error': f'Restaurant with place_id: {pk} does not exist'}, status=404)
+
+        categories = restaurant.categories.all()
+        serialized_categories = CategorySerializer(categories, many=True).data
+
+        return Response(serialized_categories, status=200)
