@@ -79,7 +79,7 @@ def upsert_catalog_object(client, object_body):
 
 def upsert_category(client, category, restaurant_id):
     idempotency_key = str(uuid.uuid4())
-    id_value = f"#{category['name'].replace(' ', '_')}_{restaurant_id}"
+    id_value = f"#{category['name'].replace(' ', '_')}__{restaurant_id}"
     category_body = {
         "idempotency_key": idempotency_key,
         "object": {
@@ -95,7 +95,7 @@ def upsert_category(client, category, restaurant_id):
 
 def upsert_item(client, item, restaurant_id):
     idempotency_key = str(uuid.uuid4())
-    id_value = f"#{restaurant_id}_{item['name']}"
+    id_value = f"#{item['name'].replace(' ', '_')}__{restaurant_id}"
 
     variations = [{
         "type": "ITEM_VARIATION",
@@ -105,7 +105,7 @@ def upsert_item(client, item, restaurant_id):
             "name": v['name'],
             "pricing_type": "FIXED_PRICING",
             "price_money": {
-                "amount": v['price'] * 100,
+                "amount": v['price'],
                 "currency": "USD"
             }
         }
@@ -136,7 +136,7 @@ def upsert_item(client, item, restaurant_id):
 
 def upsert_variation(client, variation, restaurant_id):
     idempotency_key = str(uuid.uuid4())
-    id_value = f"#{variation['name'].replace(' ', '_')}_{restaurant_id}"
+    id_value = f"#{variation['name'].replace(' ', '_')}__{restaurant_id}"
     variation_body = {
         "idempotency_key": idempotency_key,
         "object": {
@@ -145,7 +145,7 @@ def upsert_variation(client, variation, restaurant_id):
             "item_variation_data": {
                 "name": variation['name'],
                 "price_money": {
-                    "amount": variation['price'] * 100,
+                    "amount": variation['price'],
                     "currency": "USD"
                 }
             }
@@ -276,7 +276,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                             defaults={
                                 'item_id': item_id,
                                 'description': item.get('description', None),
-                                'reference_id': f"#{place_id}_{item['name']}"
+                                'reference_id': f"#{item['name'].replace(' ', '_')}__{place_id}"
                             }
                         )
                         for variation in item.get('variations', []):
@@ -286,8 +286,8 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                                 defaults={
                                     'price': variation['price'],
                                     'quantity': variation.get('quantity', 100),
-                                    'variation_id': f"#{place_id}_{variation['name']}",
-                                    'reference_id': f"#{place_id}_{item['name']}_{variation['name']}"
+                                    'variation_id': f"#{variation['name'].replace(' ', '_')}__{place_id}",
+                                    'reference_id': f"#{item['name'].replace(' ', '_')}__{variation['name'].replace(' ', '_')}__{place_id}"
                                 }
                             )
 
