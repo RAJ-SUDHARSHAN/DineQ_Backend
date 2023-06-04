@@ -1,7 +1,7 @@
 import contextlib
-import datetime
 import os
 import uuid
+from datetime import datetime, timezone
 
 import requests
 from django.conf import settings
@@ -72,7 +72,7 @@ def get_square_client():
 def upsert_catalog_object(client, object_body):
     response = client.catalog.upsert_catalog_object(object_body)
     if response.is_success():
-        return {'success': response.body['catalog_object']['id']}
+        return {'success': response.body['catalog_object']}
     elif response.is_error():
         return {'error': response.errors}
 
@@ -95,35 +95,64 @@ def upsert_category(client, category, restaurant_id):
 
 def upsert_item(client, item, restaurant_id):
     idempotency_key = str(uuid.uuid4())
-    id_value = f"#{item['name'].replace(' ', '_')}_{item['category_id']}"
+    id_value = f"#{restaurant_id}_{item['name']}"
+
     variations = [{
         "type": "ITEM_VARIATION",
-        "id": f"#{variation['name'].replace(' ', '_')}_{id_value}",
+        "id": f"{id_value}_{v['name']}",
         "item_variation_data": {
             "item_id": id_value,
-            "name": variation["name"],
+            "name": v['name'],
             "pricing_type": "FIXED_PRICING",
             "price_money": {
-                "amount": variation["price"],
+                "amount": v['price'] * 100,
                 "currency": "USD"
             }
         }
-    } for variation in item.get('variations', [])]
-
+    } for v in item.get('variations', [])]
     item_body = {
         "idempotency_key": idempotency_key,
         "object": {
             "type": "ITEM",
             "id": id_value,
             "item_data": {
-                "name": item["name"],
-                "description": item["description"],
-                "category_id": item["category_id"],
+                "name": item['name'],
+                "description": item.get('description'),
+                "category_id": item['category_id'],
                 "variations": variations
-            },
+            }
         }
     }
-    return upsert_catalog_object(client, item_body)
+
+    response = upsert_catalog_object(client, item_body)
+
+    if "success" in response:
+        variation_ids = [v['id']
+                         for v in response['success']['item_data']['variations']]
+        return {'success': {'item_id': response['success']['id'], 'variation_ids': variation_ids}}
+
+    return response
+
+
+def upsert_variation(client, variation, restaurant_id):
+    idempotency_key = str(uuid.uuid4())
+    id_value = f"#{variation['name'].replace(' ', '_')}_{restaurant_id}"
+    variation_body = {
+        "idempotency_key": idempotency_key,
+        "object": {
+            "type": "ITEM_VARIATION",
+            "id": id_value,
+            "item_variation_data": {
+                "name": variation['name'],
+                "price_money": {
+                    "amount": variation['price'] * 100,
+                    "currency": "USD"
+                }
+            }
+        }
+    }
+
+    return upsert_catalog_object(client, variation_body)
 
 
 def update_item_in_category(client, restaurant, category_name, item_name, new_data):
@@ -147,7 +176,6 @@ def update_item_in_category(client, restaurant, category_name, item_name, new_da
 
     if response.is_success():
         items = response.body['objects']
-        # Find the desired item
         for item in items:
             if item['item_data']['name'] == item_name:
                 item_id = item['id']
@@ -160,12 +188,41 @@ def update_item_in_category(client, restaurant, category_name, item_name, new_da
                         "item_data": new_data
                     }
                 }
-
-                # Update the item
                 return upsert_catalog_object(client, item_body)
         return {'error': f'Item "{item_name}" not found in category "{category_name}"'}
     elif response.is_error():
         return {'error': response.errors}
+
+
+def set_inventory_count(client, catalog_object_id, quantity):
+    responses = []
+    for variation_id in catalog_object_id:
+        body = {
+            "idempotency_key": str(uuid.uuid4()),
+            "changes": [
+                {
+                    "type": "ADJUSTMENT",
+                    "adjustment": {
+                        "location_id": "LS3AWJK2V4HW5",
+                        "catalog_object_id": str(variation_id),
+                        "from_state": "NONE",
+                        "to_state": "IN_STOCK",
+                        "quantity": str(quantity),
+                        "occurred_at": datetime.now(timezone.utc).isoformat()
+                    }
+                }
+            ]
+        }
+        response = client.inventory.batch_change_inventory(body)
+        if response.is_success():
+            print(
+                f"Inventory set to {quantity} for variation id {variation_id}")
+            responses.append({'success': response.body})
+        elif response.is_error():
+            print(
+                f"Error setting inventory for variation id {variation_id}: {response.errors}")
+            responses.append({'error': response.errors})
+    return responses
 
 
 class RestaurantViewSet(viewsets.ModelViewSet):
@@ -186,15 +243,13 @@ class RestaurantViewSet(viewsets.ModelViewSet):
             if 'error' in category_response:
                 return Response({'error': f'Failed to upsert category: {category["name"]}. Error: {category_response["error"]}'}, status=500)
 
-            category_id = category_response['success']
+            category_id = category_response['success']['id']
 
             try:
                 with transaction.atomic():
                     category_obj, created = Category.objects.get_or_create(
                         name=category['name'], restaurant=restaurant)
                     category_obj.category_id = category_id
-                    # New line
-                    category_obj.reference_id = f"#{place_id}_{category['name']}"
                     category_obj.save()
             except Exception as e:
                 return Response({'error': f'Failed to upsert category: {category["name"]} in DB. Error: {str(e)}'}, status=500)
@@ -205,7 +260,13 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                 if 'error' in item_response:
                     return Response({'error': f'Failed to upsert item: {item["name"]}. Error: {item_response["error"]}'}, status=500)
 
-                item_id = item_response['success']
+                item_id = item_response['success']['item_id']
+                variation_ids = item_response['success']['variation_ids']
+                # Set default inventory to 100
+                inventory_response = set_inventory_count(
+                    client, variation_ids, 100)
+                if 'error' in inventory_response:
+                    return Response({'error': f'Failed to set default inventory for item: {item["name"]}. Error: {inventory_response["error"]}'}, status=500)
 
                 try:
                     with transaction.atomic():
@@ -215,7 +276,6 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                             defaults={
                                 'item_id': item_id,
                                 'description': item.get('description', None),
-                                # New line
                                 'reference_id': f"#{place_id}_{item['name']}"
                             }
                         )
@@ -225,17 +285,16 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                                 item=item_obj,
                                 defaults={
                                     'price': variation['price'],
-                                    'quantity': variation.get('quantity', 10),
-                                    # New line
+                                    'quantity': variation.get('quantity', 100),
                                     'variation_id': f"#{place_id}_{variation['name']}",
-                                    # New line
                                     'reference_id': f"#{place_id}_{item['name']}_{variation['name']}"
                                 }
                             )
-                except Exception as e:
-                    return Response({'error': f'Failed to upsert item: {item["name"]}  in DB. Error: {str(e)}'}, status=500)
 
-        return Response({'message': 'Menu updated successfully'}, status=200)
+                except Exception as e:
+                    return Response({'error': f'Failed to upsert item: {item["name"]} in DB. Error: {str(e)}'}, status=500)
+
+        return Response({'message': 'Menu upserted successfully'}, status=200)
 
     @action(detail=True, methods=['get'], url_path='get-menu')
     def get_menu(self, request, pk=None):
@@ -248,3 +307,53 @@ class RestaurantViewSet(viewsets.ModelViewSet):
         serialized_categories = CategorySerializer(categories, many=True).data
 
         return Response(serialized_categories, status=200)
+
+    @action(detail=True, methods=['post'], url_path='update-inventory')
+    def update_inventory(self, request, pk=None):
+        try:
+            restaurant = Restaurant.objects.get(place_id=pk)
+        except Restaurant.DoesNotExist:
+            return Response({'error': f'Restaurant with place_id: {pk} does not exist'}, status=404)
+
+        client = get_square_client()
+        inventory_data = request.data.get('inventory_data', [])
+
+        for inventory_item in inventory_data:
+            item_reference_id = inventory_item['item_reference_id']
+            variation_reference_id = inventory_item['variation_reference_id']
+            quantity = inventory_item['quantity']
+
+            try:
+                variation = Variation.objects.get(
+                    reference_id=variation_reference_id)
+            except Variation.DoesNotExist:
+                return Response({'error': f'Variation with reference_id: {variation_reference_id} does not exist'}, status=404)
+
+            variation.quantity = quantity
+            variation.save()
+
+            body = {
+                "idempotency_key": str(uuid.uuid4()),
+                "changes": [
+                    {
+                        "type": "ADJUSTMENT",
+                        "adjustment": {
+                            "location_id": "LS3AWJK2V4HW5",
+                            "catalog_object_id": str(variation.variation_id),
+                            "from_state": "NONE",
+                            "to_state": "IN_STOCK",
+                            "quantity": str(quantity),
+                            "occurred_at": datetime.now(timezone.utc).isoformat()
+                        }
+                    }
+                ]
+            }
+
+            response = client.inventory.batch_change_inventory(body)
+
+            if response.is_error():
+                print(
+                    f"Error updating inventory for variation id {variation.variation_id}: {response.errors}")
+                return Response({'error': f'Failed to update inventory for variation: {variation_reference_id}. Error: {response.errors}'}, status=500)
+
+        return Response({'message': 'Inventory updated successfully'}, status=200)
