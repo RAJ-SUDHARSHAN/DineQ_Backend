@@ -254,7 +254,6 @@ def adjust_inventory(client, restaurant, inventory_data, order_placed=False):
     return {'message': 'Inventory updated successfully', 'status': 200}
 
 
-
 def create_order(client, location_id, line_items):
     body = {
         "idempotency_key": str(uuid.uuid4()),
@@ -272,13 +271,13 @@ def create_order(client, location_id, line_items):
         return {'error': response.errors}
 
 
-def retrieve_order(client, location_id, order_id):
+def retrieve_order(client, order_id):
     response = client.orders.retrieve_order(order_id)
 
     if response.is_success():
-        return response.body['order']
+        return {'order': response.body['order']}
     elif response.is_error():
-        return None
+        return {'error': response.errors}
 
 
 class RestaurantViewSet(viewsets.ModelViewSet):
@@ -392,7 +391,6 @@ class RestaurantViewSet(viewsets.ModelViewSet):
 
         catalog_to_variation_id = {}
         order_data = request.data.get('order_data', [])
-
         line_items = []
         for item in order_data:
             variation_reference_id = item['variation_reference_id']
@@ -412,20 +410,20 @@ class RestaurantViewSet(viewsets.ModelViewSet):
 
         client = get_square_client()
         response = create_order(client, "LS3AWJK2V4HW5", line_items)
-
         if 'error' in response:
             return Response({'error': f'Failed to place order. Error: {response["error"]}'}, status=500)
 
-        order = retrieve_order(client, "LS3AWJK2V4HW5",
-                               response['success']['order']['id'])
+        order = retrieve_order(client,
+                               response['success']['order']['id'])['order']
 
         line_item_counts = defaultdict(int)
 
         for item in order['line_items']:
-            line_item_counts[catalog_to_variation_id[item['catalog_object_id']]] += int(item['quantity'])
+            line_item_counts[catalog_to_variation_id[item['catalog_object_id']]
+                             ] += int(item['quantity'])
 
-        inventory_data = [{'variation_reference_id': variation_id, 'quantity': str(quantity)} for variation_id, quantity in line_item_counts.items()]
-
+        inventory_data = [{'variation_reference_id': variation_id, 'quantity': str(
+            quantity)} for variation_id, quantity in line_item_counts.items()]
 
         inventory_response = adjust_inventory(
             client, restaurant, inventory_data, True)
@@ -434,3 +432,16 @@ class RestaurantViewSet(viewsets.ModelViewSet):
             return Response({'error': inventory_response['error']}, status=inventory_response.get('status', 500))
 
         return Response({'message': 'Order placed and inventory updated successfully', 'order_id': response['success']['order']['id']}, status=200)
+
+    @action(detail=True, methods=['get'], url_path='retrieve-order')
+    def retrieve_order(self, request, pk=None):
+        client = get_square_client()
+        order_id = request.query_params.get('order_id')
+        if not order_id:
+            return Response({"error": "order_id parameter is required"}, status=400)
+
+        result = retrieve_order(client, order_id)
+        if 'error' in result:
+            return Response(result, status=400)
+        else:
+            return Response(result, status=200)
