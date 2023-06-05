@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import uuid
 from collections import defaultdict
@@ -6,22 +7,74 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 from django.conf import settings
+from django.contrib.auth.models import User
 from django.contrib.gis.db.models.functions import Distance, GeometryDistance
 from django.contrib.gis.geos import Point
 from django.db import transaction
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from square.client import Client
 
-from .models import Category, Item, Restaurant, Variation
+from .models import Category, Item, Queue, Restaurant, User, Variation
 from .serializers import (
     CategorySerializer,
     ItemSerializer,
     RestaurantSerializer,
     VariationSerializer,
 )
+
+
+@csrf_exempt
+def register(request):
+    if request.method == "POST":
+        data = json.loads(request.body)
+        email = data.get("email", None)
+        password = data.get("password", None)
+
+        if not email or not password:
+            return JsonResponse({"error": "Email and Password required"}, status=400)
+
+        try:
+            user = User.objects.filter(email=email).first()
+            if user:
+                return JsonResponse(
+                    {"error": "A user with this email already exists"}, status=400
+                )
+
+            user = User.objects.create_user(email=email, password=password)
+            user.save()
+            return JsonResponse({"success": "User created successfully"}, status=201)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+    else:
+        return JsonResponse({"error": "Invalid request method"}, status=400)
+
+
+@csrf_exempt
+def login(request):
+    if request.method == "POST":
+        data = json.loads(request.body)
+        email = data.get("email", None)
+        password = data.get("password", None)
+
+        if not email or not password:
+            return JsonResponse({"error": "Email and Password required"}, status=400)
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return JsonResponse({"error": "Invalid email or password"}, status=400)
+
+        if user.check_password(password):
+            return JsonResponse({"success": "User logged in successfully"}, status=200)
+        else:
+            return JsonResponse({"error": "Invalid email or password"}, status=400)
+    else:
+        return JsonResponse({"error": "Invalid request method"}, status=400)
 
 
 class NearbyRestaurantsAPIView(APIView):
@@ -604,3 +657,88 @@ class RestaurantViewSet(viewsets.ModelViewSet):
             return Response(result.body, status=200)
         elif result.is_error():
             return Response({"error": result.errors}, status=500)
+
+    @action(detail=True, methods=["post"], url_path="join-queue")
+    def join_queue(self, request, pk=None):
+        email = request.data.get("email")
+        user = User.objects.get(email=email)
+
+        try:
+            restaurant = Restaurant.objects.get(place_id=pk)
+        except Restaurant.DoesNotExist:
+            return Response(
+                {"error": f"Restaurant with place_id: {pk} does not exist"}, status=404
+            )
+
+        party_size = request.data.get("party_size", 1)
+
+        if party_size <= 0:
+            return Response(
+                {"error": "Party size must be a positive integer"}, status=400
+            )
+
+        if Queue.objects.filter(restaurant=restaurant, user=user).exists():
+            return Response(
+                {"error": f"User is already in the queue for {restaurant.name}"},
+                status=400,
+            )
+
+        if restaurant.available_seats >= party_size:
+            restaurant.available_seats -= party_size
+            restaurant.save()
+            return Response(
+                {"success": f"You can directly go and sit at {restaurant.name}"},
+                status=200,
+            )
+        else:
+            queue_entry = Queue.objects.create(
+                restaurant=restaurant, user=user, party_size=party_size
+            )
+            return Response(
+                {
+                    "success": f"You have joined the queue for {restaurant.name}. Please wait for your turn."
+                },
+                status=200,
+            )
+
+    @action(detail=True, methods=["post"], url_path="release-seats")
+    def release_seats(self, request, pk=None):
+        try:
+            restaurant = Restaurant.objects.get(place_id=pk)
+        except Restaurant.DoesNotExist:
+            return Response(
+                {"error": f"Restaurant with place_id: {pk} does not exist"}, status=404
+            )
+
+        seats_released = request.data.get("seats_released", 0)
+
+        if seats_released <= 0:
+            return Response(
+                {"error": "Number of seats released must be a positive integer"},
+                status=400,
+            )
+
+        restaurant.available_seats = min(
+            restaurant.available_seats + seats_released, restaurant.total_seats
+        )
+        restaurant.save()
+
+        queues = Queue.objects.filter(restaurant=restaurant).order_by("created_at")
+
+        seated_users = []
+        for queue in queues:
+            if queue.party_size <= restaurant.available_seats:
+                restaurant.available_seats -= queue.party_size
+                restaurant.save()
+                seated_users.append(queue.user.email)
+                queue.delete()
+            else:
+                break
+
+        return Response(
+            {
+                "success": f"Released {seats_released} seats for {restaurant.name}. Checked queue for available seats.",
+                "seated_users": seated_users,
+            },
+            status=200,
+        )
