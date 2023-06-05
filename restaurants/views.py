@@ -445,3 +445,51 @@ class RestaurantViewSet(viewsets.ModelViewSet):
             return Response(result, status=400)
         else:
             return Response(result, status=200)
+
+    @action(detail=True, methods=['post'], url_path='checkout')
+    def create_terminal_checkout(self, request, pk=None):
+        try:
+            restaurant = Restaurant.objects.get(place_id=pk)
+        except Restaurant.DoesNotExist:
+            return Response({'error': f'Restaurant with place_id: {pk} does not exist'}, status=404)
+
+        order_id = request.data.get('order_id')
+        if not order_id:
+            return Response({"error": "order_id parameter is required"}, status=400)
+
+        client = get_square_client()
+        response = retrieve_order(client, order_id)
+        if 'error' in response:
+            return Response(response, status=400)
+
+        order = response['order']
+
+        if order['state'] != 'OPEN':
+            return Response({'error': 'Cannot create a checkout for a non-OPEN order'}, status=400)
+
+        total_money = order['total_money']
+        amount = total_money['amount']
+        currency = total_money['currency']
+
+        checkout_request_body = {
+            "idempotency_key": str(uuid.uuid4()),
+            "checkout": {
+                "amount_money": {
+                    "amount": amount,
+                    "currency": currency
+                },
+                "order_id": order_id,
+                "device_options": {
+                    "device_id": "9fa747a2-25ff-48ee-b078-04381f7c828f"
+                },
+                "payment_type": "CARD_PRESENT"
+            }
+        }
+
+        result = client.terminal.create_terminal_checkout(
+            body=checkout_request_body)
+
+        if result.is_success():
+            return Response(result.body, status=200)
+        elif result.is_error():
+            return Response({'error': result.errors}, status=500)
