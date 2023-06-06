@@ -11,7 +11,9 @@ from django.contrib.auth.models import User
 from django.contrib.gis.db.models.functions import Distance, GeometryDistance
 from django.contrib.gis.geos import Point
 from django.db import transaction
+from django.db.models import Sum
 from django.http import JsonResponse
+from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -19,7 +21,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from square.client import Client
 
-from .models import Category, Item, Queue, Restaurant, User, Variation
+from .models import Category, Item, Queue, Restaurant, User, Variation, Order
 from .serializers import (
     CategorySerializer,
     ItemSerializer,
@@ -481,6 +483,17 @@ class RestaurantViewSet(viewsets.ModelViewSet):
 
         return Response(serialized_categories, status=200)
 
+    @action(detail=True, methods=["get"], url_path="available-seats")
+    def available_seats(self, request, pk=None):
+        try:
+            restaurant = Restaurant.objects.get(place_id=pk)
+        except Restaurant.DoesNotExist:
+            return Response(
+                {"error": f"Restaurant with place_id: {pk} does not exist"}, status=404
+            )
+
+        return Response({"available_seats": restaurant.available_seats}, status=200)
+
     @action(detail=True, methods=["post"], url_path="update-inventory")
     def update_inventory(self, request, pk=None):
         try:
@@ -510,6 +523,9 @@ class RestaurantViewSet(viewsets.ModelViewSet):
             return Response(
                 {"error": f"Restaurant with place_id: {pk} does not exist"}, status=404
             )
+
+        email = request.data.get("email")
+        user = get_object_or_404(User, email=email)
 
         catalog_to_variation_id = {}
         order_data = request.data.get("order_data", [])
@@ -549,6 +565,8 @@ class RestaurantViewSet(viewsets.ModelViewSet):
         order = retrieve_order(client, response["success"]["order"]["id"])["order"]
         order_id = response["success"]["order"]["id"]
 
+        created_order = Order.objects.create(user=user, order_id=order_id)
+
         line_item_counts = defaultdict(int)
 
         for item in order["line_items"]:
@@ -581,6 +599,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                 "message": "Order placed and inventory updated successfully",
                 "order_id": response["success"]["order"]["id"],
                 "invoice_id": invoice_result.body["invoice"]["id"],
+                "uoi": created_order.unique_order_identifier,
             },
             status=200,
         )
@@ -589,10 +608,12 @@ class RestaurantViewSet(viewsets.ModelViewSet):
     def retrieve_order(self, request, pk=None):
         client = get_square_client()
         order_id = request.query_params.get("order_id")
+        uoiObject = get_object_or_404(Order, order_id=order_id)
         if not order_id:
             return Response({"error": "order_id parameter is required"}, status=400)
 
         result = retrieve_order(client, order_id)
+        result["uoi"] = uoiObject.unique_order_identifier
         if "error" in result:
             return Response(result, status=400)
         else:
@@ -621,9 +642,18 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                 {"error": f"Restaurant with place_id: {pk} does not exist"}, status=404
             )
 
-        order_id = request.data.get("order_id")
-        if not order_id:
-            return Response({"error": "order_id parameter is required"}, status=400)
+        uoi = request.data.get("uoi")
+        if not uoi:
+            return Response({"error": "uoi parameter is required"}, status=400)
+
+        try:
+            order_obj = Order.objects.get(unique_order_identifier=uoi)
+        except Order.DoesNotExist:
+            return Response(
+                {"error": f"Order with UOI: {uoi} does not exist"}, status=404
+            )
+
+        order_id = order_obj.order_id
 
         client = get_square_client()
         response = retrieve_order(client, order_id)
@@ -654,6 +684,10 @@ class RestaurantViewSet(viewsets.ModelViewSet):
         result = client.terminal.create_terminal_checkout(body=checkout_request_body)
 
         if result.is_success():
+            email = request.data.get("email")
+            user = User.objects.get(email=email)
+            user.is_seated = False
+            user.save()
             return Response(result.body, status=200)
         elif result.is_error():
             return Response({"error": result.errors}, status=500)
@@ -661,7 +695,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="join-queue")
     def join_queue(self, request, pk=None):
         email = request.data.get("email")
-        user = User.objects.get(email=email)
+        user = get_object_or_404(User, email=email)
 
         try:
             restaurant = Restaurant.objects.get(place_id=pk)
@@ -683,9 +717,18 @@ class RestaurantViewSet(viewsets.ModelViewSet):
                 status=400,
             )
 
+        if user.is_seated:
+            return Response(
+                {"error": "User is already seated at a restaurant"}, status=400
+            )
+
         if restaurant.available_seats >= party_size:
             restaurant.available_seats -= party_size
             restaurant.save()
+
+            user.is_seated = True
+            user.save()
+
             return Response(
                 {"success": f"You can directly go and sit at {restaurant.name}"},
                 status=200,
@@ -694,12 +737,38 @@ class RestaurantViewSet(viewsets.ModelViewSet):
             queue_entry = Queue.objects.create(
                 restaurant=restaurant, user=user, party_size=party_size
             )
+            position = (
+                Queue.objects.filter(
+                    restaurant=restaurant, joined_at__lt=queue_entry.joined_at
+                ).aggregate(sum=Sum("party_size"))["sum"]
+                or 0
+            )
+            position += 1
             return Response(
                 {
-                    "success": f"You have joined the queue for {restaurant.name}. Please wait for your turn."
+                    "success": f"You have joined the queue.",
+                    "position": position,
                 },
                 status=200,
             )
+
+    @action(detail=True, methods=["get"], url_path="queue-size")
+    def get_queue_size(self, request, pk=None):
+        try:
+            restaurant = Restaurant.objects.get(place_id=pk)
+        except Restaurant.DoesNotExist:
+            return Response(
+                {"error": f"Restaurant with place_id: {pk} does not exist"}, status=404
+            )
+
+        queue_size = (
+            Queue.objects.filter(restaurant=restaurant).aggregate(
+                total=Sum("party_size")
+            )["total"]
+            or 0
+        )
+
+        return Response({"queue_size": queue_size}, status=200)
 
     @action(detail=True, methods=["post"], url_path="release-seats")
     def release_seats(self, request, pk=None):
@@ -723,14 +792,20 @@ class RestaurantViewSet(viewsets.ModelViewSet):
         )
         restaurant.save()
 
-        queues = Queue.objects.filter(restaurant=restaurant).order_by("created_at")
+        queues = Queue.objects.filter(restaurant=restaurant).order_by("joined_at")
 
         seated_users = []
         for queue in queues:
             if queue.party_size <= restaurant.available_seats:
                 restaurant.available_seats -= queue.party_size
                 restaurant.save()
-                seated_users.append(queue.user.email)
+
+                user = get_object_or_404(User, email=queue.user.email)
+                seated_users.append(user.email)
+
+                user.is_seated = True
+                user.save()
+
                 queue.delete()
             else:
                 break

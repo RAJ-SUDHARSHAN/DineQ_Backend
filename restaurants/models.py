@@ -1,6 +1,7 @@
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import BaseUserManager
 from django.contrib.gis.db import models
+from django.utils.crypto import get_random_string
 
 
 class Restaurant(models.Model):
@@ -72,6 +73,7 @@ class User(models.Model):
     phone_number = models.CharField(max_length=20, blank=True, null=True)
     is_staff_user = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+    is_seated = models.BooleanField(default=False)
     USERNAME_FIELD = "email"
 
     objects = UserManager()
@@ -98,3 +100,20 @@ class Queue(models.Model):
 
     class Meta:
         ordering = ["joined_at"]
+
+def generate_uoi():
+    return get_random_string(length=6)
+
+
+class Order(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="orders")
+    unique_order_identifier = models.CharField(
+        max_length=6, unique=True, default=generate_uoi
+    )
+    order_id = models.CharField(max_length=255)
+
+    class Meta:
+        ordering = ["-id"]
+
+    def __str__(self):
+        return f"Order {self.unique_order_identifier} by {self.user.email}"
