@@ -29,6 +29,32 @@ The backend for DineQ primarily consists of multiple API endpoints created with 
 12. **Queue Size:** Used to display the current queue size of the restaurants.
 13. **Release Seats:** Used to release occupied seats so that the next in queue can come in.
 
+
+#### **Access Instructions for DineQ**
+**App platform:** Android
+##### <u>User-Side Application</u>
+
+1. **Download and Install**: Download the user-side DineQ application by clicking [here](https://drive.google.com/file/d/1qS1O014vUBZECEdzcn1NuPgiaHLz1qFN/view). Install the application on your device. If any permissions are requested during installation, please allow them for the full functionality of the application.
+
+2. **Create an Account**: Open the application and proceed to create an account. After account creation, log into your account.
+
+3. **Navigation and Functionality**: The application is designed to show only the restaurants registered with DineQ. We've hardcoded four restaurant geolocations for this demonstration. Once logged in, you can join a virtual queue if seats are not readily available at your preferred restaurant. Upon joining the queue, you'll receive a notification with your queue position.
+
+> - If you've already joined a queue, you'll see a notification about the same.
+> - If seats are available, you'll receive a notification prompting you to head to the restaurant directly.
+> - Once at the restaurant, you can browse the menu and add items to your cart. After verifying the total bill, you can place an order. Please note that it may take up to 5 seconds to place an order, so kindly wait for this duration before proceeding.
+> - Proceed to the "View Tab" which displays the invoice containing all ordered items with respective prices and quantities, and the total amount due. Here, you'll also find a unique 6-digit code for making payment. Note this code down for future reference.
+
+##### <u>Restaurant-Side Application</u>
+
+1. **Download and Install**: Download the user-side DineQ application by clicking [here](https://drive.google.com/file/d/175erRkID43iZGUvqUMwsfH264PongSKd/view?usp=sharing). Install the application on your device. If any permissions are requested during installation, please allow them for the full functionality of the application.
+
+2. **Menu Management**: The staff at the restaurant can use this application to see the menu, add new items, and modify inventory counts.
+
+3. **Seat Management**: Staff can release seats if a user arrives but hasn't placed an order yet. If a user has made a payment, the seats are automatically released, and the next user in the queue can be seated.
+
+4. **Payment Processing**: Staff can navigate to the "Terminal Checkout" section of the app where they can enter the unique order identifier to complete the payment and order. Please note that these operations are executed in a sandbox environment. According to Square's rules, the test order should be less than 25$ for the payment status to be completed.
+
 ## Setup Instructions for macOS 📋
 
 ### Clone the Repository
